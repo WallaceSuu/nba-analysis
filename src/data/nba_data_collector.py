@@ -3,7 +3,7 @@ from nba_api.stats.static import teams
 import pandas as pd
 from datetime import datetime
 import time
-from .db_config import get_connection, release_connection
+from db_config import get_connection, release_connection
 
 class NBADataCollector:
     def __init__(self):
@@ -30,7 +30,7 @@ class NBADataCollector:
             print(f"Error fetching teams: {e}")
             return None
     
-    def get_team_games(self, team_id, season='2023-24'):
+    def get_team_games(self, team_id, season='2024-25'):
         """Fetch all games for a specific team in a season"""
         try:
             games = leaguegamefinder.LeagueGameFinder(
@@ -42,7 +42,7 @@ class NBADataCollector:
             print(f"Error fetching team games: {e}")
             return None
     
-    def get_player_games(self, player_id, season='2023-24'):
+    def get_player_games(self, player_id, season='2024-25'):
         """Fetch all games for a specific player in a season"""
         try:
             games = playergamelog.PlayerGameLog(
@@ -114,6 +114,24 @@ class NBADataCollector:
         try:
             with self.connection.cursor() as cur:
                 for _, row in games_df.iterrows():
+                    # Determine home and away teams based on the MATCHUP column
+                    matchup = row['MATCHUP']
+                    # vs. is a home game, @ is an away game
+                    is_home = 'vs.' in matchup
+                    
+                    # Extract team IDs
+                    team_id = row['TEAM_ID']
+                    opponent_id = row['OPPONENT_TEAM_ID'] if 'OPPONENT_TEAM_ID' in row else None
+                    
+                    if opponent_id is None:
+                        # If OPPONENT_TEAM_ID is not available, try to extract from MATCHUP
+                        opponent_abbr = matchup.split(' ')[-1]
+                        # Might need to add a mapping from team abbreviations to IDs
+                        continue
+                    
+                    home_team_id = team_id if is_home else opponent_id
+                    away_team_id = opponent_id if is_home else team_id
+                    
                     cur.execute("""
                         INSERT INTO games (game_id, season_id, game_date, home_team_id, away_team_id,
                                          home_team_score, away_team_score)
@@ -129,62 +147,75 @@ class NBADataCollector:
                         row['GAME_ID'],
                         row['SEASON_ID'],
                         datetime.strptime(row['GAME_DATE'], '%Y-%m-%d').date(),
-                        row['TEAM_ID'],
-                        row['OPPONENT_TEAM_ID'],
-                        row['PLUS_MINUS'] > 0 and row['PTS'] or row['OPPONENT_PTS'],
-                        row['PLUS_MINUS'] > 0 and row['OPPONENT_PTS'] or row['PTS']
+                        home_team_id,
+                        away_team_id,
+                        row['PTS'] if is_home else row['OPPONENT_PTS'],
+                        row['OPPONENT_PTS'] if is_home else row['PTS']
                     ))
+                    
             self.connection.commit()
         except Exception as e:
             self.connection.rollback()
             print(f"Error saving games to database: {e}")
+            # Print the row that caused the error for debugging
+            print(f"Problematic row: {row.to_dict()}")
     
     def save_player_stats_to_db(self, stats_df):
         """Save player statistics to database"""
+        if stats_df.empty:
+            print("No stats available for this player")
+            return
+            
         try:
             with self.connection.cursor() as cur:
                 for _, row in stats_df.iterrows():
-                    cur.execute("""
-                        INSERT INTO player_stats (
-                            game_id, player_id, team_id, points, rebounds, assists,
-                            steals, blocks, turnovers, minutes_played,
-                            field_goals_made, field_goals_attempted,
-                            three_pointers_made, three_pointers_attempted,
-                            free_throws_made, free_throws_attempted
-                        )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (game_id, player_id) DO UPDATE
-                        SET points = EXCLUDED.points,
-                            rebounds = EXCLUDED.rebounds,
-                            assists = EXCLUDED.assists,
-                            steals = EXCLUDED.steals,
-                            blocks = EXCLUDED.blocks,
-                            turnovers = EXCLUDED.turnovers,
-                            minutes_played = EXCLUDED.minutes_played,
-                            field_goals_made = EXCLUDED.field_goals_made,
-                            field_goals_attempted = EXCLUDED.field_goals_attempted,
-                            three_pointers_made = EXCLUDED.three_pointers_made,
-                            three_pointers_attempted = EXCLUDED.three_pointers_attempted,
-                            free_throws_made = EXCLUDED.free_throws_made,
-                            free_throws_attempted = EXCLUDED.free_throws_attempted
-                    """, (
-                        row['GAME_ID'],
-                        row['PLAYER_ID'],
-                        row['TEAM_ID'],
-                        row['PTS'],
-                        row['REB'],
-                        row['AST'],
-                        row['STL'],
-                        row['BLK'],
-                        row['TOV'],
-                        row['MIN'],
-                        row['FGM'],
-                        row['FGA'],
-                        row['FG3M'],
-                        row['FG3A'],
-                        row['FTM'],
-                        row['FTA']
-                    ))
+                    try:
+                        cur.execute("""
+                            INSERT INTO player_stats (
+                                game_id, player_id, team_id, points, rebounds, assists,
+                                steals, blocks, turnovers, minutes_played,
+                                field_goals_made, field_goals_attempted,
+                                three_pointers_made, three_pointers_attempted,
+                                free_throws_made, free_throws_attempted
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (game_id, player_id) DO UPDATE
+                            SET points = EXCLUDED.points,
+                                rebounds = EXCLUDED.rebounds,
+                                assists = EXCLUDED.assists,
+                                steals = EXCLUDED.steals,
+                                blocks = EXCLUDED.blocks,
+                                turnovers = EXCLUDED.turnovers,
+                                minutes_played = EXCLUDED.minutes_played,
+                                field_goals_made = EXCLUDED.field_goals_made,
+                                field_goals_attempted = EXCLUDED.field_goals_attempted,
+                                three_pointers_made = EXCLUDED.three_pointers_made,
+                                three_pointers_attempted = EXCLUDED.three_pointers_attempted,
+                                free_throws_made = EXCLUDED.free_throws_made,
+                                free_throws_attempted = EXCLUDED.free_throws_attempted
+                        """, (
+                            row['GAME_ID'],
+                            row['PLAYER_ID'],
+                            row['TEAM_ID'],
+                            row.get('PTS', 0),
+                            row.get('REB', 0),
+                            row.get('AST', 0),
+                            row.get('STL', 0),
+                            row.get('BLK', 0),
+                            row.get('TOV', 0),
+                            row.get('MIN', 0),
+                            row.get('FGM', 0),
+                            row.get('FGA', 0),
+                            row.get('FG3M', 0),
+                            row.get('FG3A', 0),
+                            row.get('FTM', 0),
+                            row.get('FTA', 0)
+                        ))
+                    except Exception as e:
+                        print(f"Error processing row: {e}")
+                        print(f"Problematic row: {row.to_dict()}")
+                        continue
+                        
             self.connection.commit()
         except Exception as e:
             self.connection.rollback()
