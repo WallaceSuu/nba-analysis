@@ -1,72 +1,81 @@
-from db_config import create_tables
-from nba_data_collector import NBADataCollector
-from test_connection import test_connection
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from data.nba_data_collector import NBADataCollector
+from data.db_config import check_table_schema, recreate_tables
+import logging
 import time
+import random
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def setup_database():
-    print("Starting NBA Analytics Database Setup...")
-     
-    # Test db connection
-    print("\nTesting database connection...")
-    if not test_connection():
-        print("Database connection failed. Please check your configuration.")
-        return False
+    """Set up the NBA analytics database with all necessary data"""
     
-    # Create db tables
-    print("\n Creating database tables...")
+    logger.info("Starting NBA database setup...")
+    
+    # Check and recreate database schema if needed
     try:
-        create_tables()
-        print("Database tables created successfully!")
+        check_table_schema()
+        logger.info("Database schema verified")
     except Exception as e:
-        print(f"Error creating tables: {e}")
-        return False
+        logger.warning(f"Schema issue detected: {e}")
+        logger.info("Recreating database tables...")
+        try:
+            recreate_tables()
+            logger.info("Database tables recreated")
+        except Exception as e2:
+            logger.error(f"Failed to recreate tables: {e2}")
+            return
     
-    # Initialize data collector
-    print("\nInitializing data collector...")
     collector = NBADataCollector()
+    collector.check_database_state()
     
     # Fetch and save players
-    print("\nFetching players data...")
+    logger.info("Fetching players...")
     players = collector.get_all_players()
     if players is not None:
+        logger.info(f"Retrieved {len(players)} players")
         collector.save_players_to_db(players)
-        print(f"Saved {len(players)} players to database")
-    else:
-        print("Failed to fetch players")
-        return False
     
     # Fetch and save teams
-    print("\nFetching teams data")
+    logger.info("Fetching teams...")
     teams = collector.get_all_teams()
     if teams is not None:
+        logger.info(f"Retrieved {len(teams)} teams")
         collector.save_teams_to_db(teams)
-        print(f"Saved {len(teams)} teams to database")
-    else:
-        print("Failed to fetch teams")
-        return False
     
-    # Fetch and save games
-    print("\nFetching games data...")
-    for team_id in teams['id']:
-        print(f"   Fetching games for team {team_id}...")
+    collector.check_database_state()
+    
+    # Fetch and save games for each team
+    logger.info("Fetching games for all teams...")
+    total_games = 0
+    for i, team_id in enumerate(teams['id'], 1):
+        logger.info(f"Processing team {i}/{len(teams)} (ID: {team_id})...")
         games = collector.get_team_games(team_id)
         if games is not None:
             collector.save_games_to_db(games)
-            print(f"Saved {len(games)} games for team {team_id}")
-        time.sleep(1)  # Rate limiting
+            total_games += len(games)
+            logger.info(f"Saved {len(games)} games (Total: {total_games})")
+        else:
+            logger.warning(f"No games for team {team_id}")
+        time.sleep(random.uniform(5, 8))
     
-    # Fetch and save player stats
-    print("\nFetching player statistics...")
-    for player_id in players['PERSON_ID']:
-        print(f"Fetching stats for player {player_id}...")
-        stats = collector.get_player_games(player_id)
-        if stats is not None:
-            collector.save_player_stats_to_db(stats)
-            print(f"Saved {len(stats)} games for player {player_id}")
-        time.sleep(1)  # Rate limiting
+    logger.info(f"Total games processed: {total_games}")
     
-    print("\nSetup completed successfully!")
-    return True
+    # Fetch and save player stats in batches
+    logger.info("Fetching player statistics...")
+    if players is not None:
+        player_ids = players['PERSON_ID'].tolist()
+        logger.info(f"Processing stats for {len(player_ids)} players...")
+        collector.fetch_all_player_stats(player_ids)
+
+    # Final status
+    collector.check_database_state()
+    logger.info("NBA database setup complete!")
 
 if __name__ == "__main__":
     setup_database() 
