@@ -381,6 +381,13 @@ class NBADataCollector:
                             failed_inserts += 1
                             continue
                         
+                        # Parse the game date
+                        parsed_date = self.parse_game_date(game_date)
+                        if parsed_date is None:
+                            logger.warning(f"Could not parse date '{game_date}' for game {game_id}")
+                            failed_inserts += 1
+                            continue
+                        
                         # Extract team ID from the MATCHUP column
                         team_abbr = matchup.split(' ')[0]  # Get team abbreviation
                         
@@ -439,7 +446,7 @@ class NBADataCollector:
                             team_id,
                             team_abbr,
                             row.get('TEAM_NAME', '') or row.get('Team_Name', ''),
-                            datetime.strptime(game_date, '%Y-%m-%d').date() if isinstance(game_date, str) else game_date,
+                            parsed_date,
                             matchup,
                             row.get('WL', '') or row.get('wl', ''),
                             row.get('MIN', 0) or row.get('Min', 0),
@@ -512,6 +519,30 @@ class NBADataCollector:
                 
         except Exception as e:
             logger.error(f"Error checking database state: {e}")
+
+    def parse_game_date(self, date_str):
+        """Parse game date from various formats returned by NBA API"""
+        if not date_str or not isinstance(date_str, str):
+            return None
+        
+        # Try different date formats
+        date_formats = [
+            '%Y-%m-%d',           # 2025-04-11
+            '%b %d, %Y',          # Apr 11, 2025
+            '%B %d, %Y',          # April 11, 2025
+            '%m/%d/%Y',           # 04/11/2025
+            '%m/%d/%y',           # 04/11/25
+        ]
+        
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                continue
+        
+        # If none of the formats work, log the problematic date and return None
+        logger.warning(f"Could not parse date: {date_str}")
+        return None
 
 def log_games_dataframe_info(games_df, stage="before_db_insert"):
     """Log essential information about the games DataFrame"""
