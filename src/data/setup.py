@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data.nba_data_collector import NBADataCollector
+from data.nba_data_collector import ComprehensiveNBADataCollector
 from data.db_config import check_table_schema, recreate_tables
 import logging
 import time
@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def setup_database():
-    """Set up the NBA analytics database with all necessary data"""
+    """Set up the comprehensive NBA analytics database with all necessary data"""
     
-    logger.info("Starting NBA database setup...")
+    logger.info("Starting comprehensive NBA database setup...")
     
     # Check and recreate database schema if needed
     try:
@@ -31,51 +31,111 @@ def setup_database():
             logger.error(f"Failed to recreate tables: {e2}")
             return
     
-    collector = NBADataCollector()
+    # Initialize the comprehensive data collector
+    collector = ComprehensiveNBADataCollector()
     collector.check_database_state()
     
-    # Fetch and save players
-    logger.info("Fetching players...")
-    players = collector.get_all_players()
-    if players is not None:
-        logger.info(f"Retrieved {len(players)} players")
-        collector.save_players_to_db(players)
+    # Process all data collection
+    logger.info("Starting comprehensive data collection...")
+    collector.process_all_data('2024-25')
     
-    # Fetch and save teams
-    logger.info("Fetching teams...")
-    teams = collector.get_all_teams()
-    if teams is not None:
-        logger.info(f"Retrieved {len(teams)} teams")
-        collector.save_teams_to_db(teams)
-    
+    # Final status check
     collector.check_database_state()
-    
-    # Fetch and save games for each team
-    logger.info("Fetching games for all teams...")
-    total_games = 0
-    for i, team_id in enumerate(teams['id'], 1):
-        logger.info(f"Processing team {i}/{len(teams)} (ID: {team_id})...")
-        games = collector.get_team_games(team_id)
-        if games is not None:
-            collector.save_games_to_db(games)
-            total_games += len(games)
-            logger.info(f"Saved {len(games)} games (Total: {total_games})")
-        else:
-            logger.warning(f"No games for team {team_id}")
-        time.sleep(random.uniform(5, 8))
-    
-    logger.info(f"Total games processed: {total_games}")
-    
-    # Fetch and save player stats in batches
-    logger.info("Fetching player statistics...")
-    if players is not None:
-        player_ids = players['PERSON_ID'].tolist()
-        logger.info(f"Processing stats for {len(player_ids)} players...")
-        collector.fetch_all_player_stats(player_ids)
+    logger.info("Comprehensive NBA database setup complete!")
 
-    # Final status
-    collector.check_database_state()
-    logger.info("NBA database setup complete!")
+def setup_contract_data():
+    """Set up contract data collection (separate due to rate limiting)"""
+    logger.info("Starting contract data collection...")
+    
+    collector = ComprehensiveNBADataCollector()
+    
+    # Get all players from database
+    try:
+        with collector.connection.cursor() as cur:
+            cur.execute("SELECT player_id, full_name FROM players WHERE is_active = TRUE")
+            players = cur.fetchall()
+        
+        logger.info(f"Found {len(players)} active players for contract data collection")
+        
+        # Process contract data for each player (with significant delays)
+        for i, (player_id, full_name) in enumerate(players):
+            logger.info(f"Processing contract data for {full_name} ({i+1}/{len(players)})")
+            
+            try:
+                # Try multiple sources for contract data
+                contract_data = collector.get_player_contract_data(full_name)
+                if contract_data:
+                    # Save contract data to database
+                    collector._save_contract_data_to_db(player_id, contract_data, '2024-25')
+                
+                # Also try Basketball Reference
+                salary_data = collector.get_basketball_reference_salary(full_name)
+                if salary_data:
+                    # Save salary data to database
+                    collector._save_salary_data_to_db(player_id, salary_data)
+                
+                # Significant delay between players to avoid rate limiting
+                delay = random.uniform(10, 20)
+                logger.info(f"Waiting {delay:.2f}s before next player...")
+                time.sleep(delay)
+                
+            except Exception as e:
+                logger.error(f"Error processing contract data for {full_name}: {e}")
+                continue
+        
+        logger.info("Contract data collection complete!")
+        
+    except Exception as e:
+        logger.error(f"Error in contract data collection: {e}")
+
+def setup_value_analysis():
+    """Set up player value analysis calculations"""
+    logger.info("Starting player value analysis...")
+    
+    collector = ComprehensiveNBADataCollector()
+    
+    try:
+        with collector.connection.cursor() as cur:
+            # Get all players with both stats and salary data
+            cur.execute("""
+                SELECT p.player_id, p.full_name, p.position, 
+                       pss.points_per_game, pss.rebounds_per_game, pss.assists_per_game,
+                       pss.steals_per_game, pss.blocks_per_game, pss.turnovers_per_game,
+                       pss.minutes_per_game, pss.field_goal_percentage, pss.three_point_percentage,
+                       pss.free_throw_percentage, pss.plus_minus, pss.player_efficiency_rating,
+                       pss.true_shooting_percentage, pss.usage_rate, pss.win_shares,
+                       pss.value_over_replacement_player, pc.annual_salary
+                FROM players p
+                LEFT JOIN player_season_stats pss ON p.player_id = pss.player_id AND pss.season_id = '2024-25'
+                LEFT JOIN player_contracts pc ON p.player_id = pc.player_id AND pc.season_id = '2024-25'
+                WHERE p.is_active = TRUE
+            """)
+            players = cur.fetchall()
+        
+        logger.info(f"Found {len(players)} players for value analysis")
+        
+        # Calculate value metrics for each player
+        for player_data in players:
+            try:
+                value_metrics = collector._calculate_player_value(player_data)
+                if value_metrics:
+                    collector._save_value_analysis_to_db(value_metrics)
+                
+            except Exception as e:
+                logger.error(f"Error calculating value for player {player_data[1]}: {e}")
+                continue
+        
+        logger.info("Player value analysis complete!")
+        
+    except Exception as e:
+        logger.error(f"Error in value analysis: {e}")
 
 if __name__ == "__main__":
-    setup_database() 
+    # Run the main setup
+    setup_database()
+    
+    # Uncomment the following lines to run additional data collection
+    # (These are separated due to rate limiting and time constraints)
+    
+    # setup_contract_data()  # Uncomment to collect contract data
+    # setup_value_analysis()  # Uncomment to run value analysis 

@@ -1,2 +1,4 @@
 .env
 src/data/__pycache__/nba_data_collector.cpython-313.pyc
+*.pyc
+*.ipynb
